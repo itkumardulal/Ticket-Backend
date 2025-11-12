@@ -1,12 +1,14 @@
 import nodemailer from "nodemailer";
 
 let cachedTransporter = null;
+let lastVerify = 0;
+const VERIFY_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 async function getTransporter() {
-  // Use real SMTP if configured properly
   const host = process.env.MAIL_HOST;
   const user = process.env.MAIL_USER;
   const pass = process.env.MAIL_PASS;
+  const port = Number(process.env.MAIL_PORT || 587);
 
   const usingPlaceholder =
     !host ||
@@ -16,7 +18,6 @@ async function getTransporter() {
     String(user).includes("example.com");
 
   if (usingPlaceholder) {
-    // Development fallback: create Ethereal test account (no real email sent)
     const account = await nodemailer.createTestAccount();
     return nodemailer.createTransport({
       host: "smtp.ethereal.email",
@@ -29,15 +30,40 @@ async function getTransporter() {
     });
   }
 
-  // Cache real transporter
   if (!cachedTransporter) {
+    const secure = port === 465;
     cachedTransporter = nodemailer.createTransport({
       host,
-      port: Number(process.env.MAIL_PORT || 587),
-      secure: false,
+      port,
+      secure,
+      pool: true,
+      maxConnections: 3,
+      maxMessages: 50,
+      connectionTimeout: 15_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 20_000,
       auth: { user, pass },
+      tls: {
+        rejectUnauthorized: false,
+      },
     });
   }
+
+  const now = Date.now();
+  if (now - lastVerify > VERIFY_INTERVAL_MS) {
+    try {
+      await cachedTransporter.verify();
+      lastVerify = now;
+      console.log("SMTP connection verified");
+    } catch (verifyError) {
+      console.error("SMTP verify failed", verifyError?.message || verifyError);
+      cachedTransporter.close?.();
+      cachedTransporter = null;
+      lastVerify = 0;
+      throw verifyError;
+    }
+  }
+
   return cachedTransporter;
 }
 
@@ -48,6 +74,26 @@ function formatCurrency(value) {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   })}`;
+}
+
+async function sendWithRetry(transporter, mailOptions, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      console.log("Sending ticket email", { attempt, to: mailOptions.to });
+      return await transporter.sendMail(mailOptions);
+    } catch (err) {
+      lastError = err;
+      console.error("Ticket email send attempt failed", {
+        attempt,
+        error: err?.message || err,
+      });
+      if (attempt < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+      }
+    }
+  }
+  throw lastError;
 }
 
 export async function sendTicketEmail({
@@ -61,7 +107,6 @@ export async function sendTicketEmail({
   vipSeats,
 }) {
   const subject = "Sindhuli Concert Ticket - BrotherHood Nepal x NLT";
-  // Extract base64 from data URL if present
   let qrContentBase64 = null;
   let qrContentType = "image/png";
   if (qrDataUrl && qrDataUrl.startsWith("data:")) {
@@ -129,7 +174,7 @@ export async function sendTicketEmail({
       </p>
       ${vipInfo}
       ${detailsHtml}
-			<p style="margin:16px 0 0;font-size:13px;color:#4b5563;">Do not share this QR code publicly. It grants entry for the number of people listed above.</p>
+			<p style="margin:16px 0 0;font-size:13px;color:#4b5563;">Show this QR code at the gate during the event. Do not share with others.</p>
 			<hr style="margin:24px 0;border:none;border-top:1px solid #e5e7eb;"/>
 			<p style="margin:0;font-size:13px;color:#6b7280;">BrotherHood Nepal in collaboration with Nepal Leadership Technology (NLT)</p>
 		</div>
@@ -152,7 +197,6 @@ export async function sendTicketEmail({
       },
     ];
   }
-  const info = await transporter.sendMail(mailOptions);
-  const previewUrl = nodemailer.getTestMessageUrl(info) || null;
-  return { info, previewUrl };
+
+  return await sendWithRetry(transporter, mailOptions);
 }
