@@ -1,0 +1,102 @@
+import { DataTypes } from "sequelize";
+import { sequelize } from "./index.js";
+
+export const Ticket = sequelize.define(
+  "tickets",
+  {
+    id: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      primaryKey: true,
+      autoIncrement: true,
+    },
+    name: {
+      type: DataTypes.STRING,
+      allowNull: false,
+    },
+    email: {
+      type: DataTypes.STRING,
+      allowNull: false,
+    },
+    phone: {
+      type: DataTypes.STRING,
+      allowNull: false,
+    },
+    ticketType: {
+      type: DataTypes.ENUM("normal", "vip"),
+      allowNull: false,
+      defaultValue: "normal",
+    },
+    quantity: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: false,
+      defaultValue: 1,
+    },
+    unitPrice: {
+      type: DataTypes.DECIMAL(10, 2),
+      allowNull: false,
+      defaultValue: 0,
+    },
+    price: {
+      type: DataTypes.DECIMAL(10, 2),
+      allowNull: false,
+      defaultValue: 0,
+    },
+    remaining: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    scanCount: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    status: {
+      type: DataTypes.ENUM("pending", "approved", "cancelled", "checkedin"),
+      allowNull: false,
+      defaultValue: "pending",
+    },
+    emailSent: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
+    sentAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    token: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      unique: true,
+    },
+    vipSeats: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: false,
+      defaultValue: 0,
+    },
+  },
+  {
+    indexes: [
+      { fields: ["token"], unique: true },
+      { fields: ["email"] },
+      { fields: ["phone"] },
+      { fields: ["status"] },
+    ],
+  }
+);
+
+export async function findTicketByToken(token) {
+  return Ticket.findOne({ where: { token } });
+}
+
+export function sanitizeTicket(ticket) {
+  if (!ticket) return null;
+  const plain = ticket.toJSON ? ticket.toJSON() : ticket;
+  const { token, createdAt, updatedAt, ...rest } = plain;
+  return {
+    ...rest,
+    createdAt,
+    updatedAt,
+  };
+}
