@@ -112,6 +112,7 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
       });
       ticket.emailSent = true;
       ticket.sentAt = new Date();
+      ticket.status = "approved";
       console.log("Ticket email sent", {
         ticketId: ticket.id,
         email: ticket.email,
@@ -119,9 +120,10 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
       });
     } catch (mailErr) {
       mailError = mailErr;
-      responseMessage = "Ticket approved but email not sent";
+      responseMessage = "Email failed to send — ticket returned to pending";
       ticket.emailSent = false;
       ticket.sentAt = null;
+      ticket.status = "pending";
       console.error("Ticket email failed", {
         ticketId: ticket.id,
         email: ticket.email,
@@ -129,7 +131,6 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
       });
     }
 
-    ticket.status = "approved";
     await ticket.save();
 
     const payload = {
