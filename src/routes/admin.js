@@ -96,8 +96,11 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
     const qrPayload = JSON.stringify({ token: ticket.token });
     const qrDataUrl = await QRCode.toDataURL(qrPayload);
 
+    let responseMessage = "Ticket approved and email sent";
+    let mailError = null;
+
     try {
-      await sendTicketEmail({
+      const result = await sendTicketEmail({
         toEmail: ticket.email,
         name: ticket.name,
         qrDataUrl,
@@ -109,17 +112,35 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
       });
       ticket.emailSent = true;
       ticket.sentAt = new Date();
+      console.log("Ticket email sent", {
+        ticketId: ticket.id,
+        email: ticket.email,
+        nodemailerMessageId: result?.info?.messageId,
+      });
     } catch (mailErr) {
-      console.error("Email send failed:", mailErr?.message || mailErr);
+      mailError = mailErr;
+      responseMessage = "Ticket approved but email not sent";
+      ticket.emailSent = false;
+      ticket.sentAt = null;
+      console.error("Ticket email failed", {
+        ticketId: ticket.id,
+        email: ticket.email,
+        error: mailErr?.message || mailErr,
+      });
     }
 
     ticket.status = "approved";
     await ticket.save();
 
-    return res.json({
-      message: "Ticket approved and email sent",
+    const payload = {
+      message: responseMessage,
       ticket: sanitizeTicket(ticket),
-    });
+    };
+    if (mailError) {
+      payload.error = mailError?.message || String(mailError);
+    }
+
+    return res.json(payload);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Failed to approve ticket" });
@@ -194,7 +215,7 @@ router.post("/verify", async (req, res) => {
       return res.json({
         status: "valid",
         message:
-          "Ticket booked successfully. Do not share with others. Show at the gate during the event.",
+          "Ticket booked successfully. Do not share with others. Please show this QR at the event gate.",
       });
     }
 
