@@ -1,71 +1,12 @@
 import nodemailer from "nodemailer";
 
-let cachedTransporter = null;
-let lastVerify = 0;
-const VERIFY_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-
-async function getTransporter() {
-  const host = process.env.MAIL_HOST;
-  const user = process.env.MAIL_USER;
-  const pass = process.env.MAIL_PASS;
-  const port = Number(process.env.MAIL_PORT || 587);
-
-  const usingPlaceholder =
-    !host ||
-    host === "smtp.example.com" ||
-    !user ||
-    !pass ||
-    String(user).includes("example.com");
-
-  if (usingPlaceholder) {
-    const account = await nodemailer.createTestAccount();
-    return nodemailer.createTransport({
-      host: "smtp.ethereal.email",
-      port: 587,
-      secure: false,
-      auth: {
-        user: account.user,
-        pass: account.pass,
-      },
-    });
-  }
-
-  if (!cachedTransporter) {
-    const secure = port === 465;
-    cachedTransporter = nodemailer.createTransport({
-      host,
-      port,
-      secure,
-      pool: true,
-      maxConnections: 3,
-      maxMessages: 50,
-      connectionTimeout: 15_000,
-      greetingTimeout: 10_000,
-      socketTimeout: 20_000,
-      auth: { user, pass },
-      tls: {
-        rejectUnauthorized: false,
-      },
-    });
-  }
-
-  const now = Date.now();
-  if (now - lastVerify > VERIFY_INTERVAL_MS) {
-    try {
-      await cachedTransporter.verify();
-      lastVerify = now;
-      console.log("SMTP connection verified");
-    } catch (verifyError) {
-      console.error("SMTP verify failed", verifyError?.message || verifyError);
-      cachedTransporter.close?.();
-      cachedTransporter = null;
-      lastVerify = 0;
-      throw verifyError;
-    }
-  }
-
-  return cachedTransporter;
-}
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.MAIL_USER,
+    pass: process.env.MAIL_PASS,
+  },
+});
 
 function formatCurrency(value) {
   const amount = Number(value);
@@ -74,26 +15,6 @@ function formatCurrency(value) {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   })}`;
-}
-
-async function sendWithRetry(transporter, mailOptions, attempts = 3) {
-  let lastError;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      console.log("Sending ticket email", { attempt, to: mailOptions.to });
-      return await transporter.sendMail(mailOptions);
-    } catch (err) {
-      lastError = err;
-      console.error("Ticket email send attempt failed", {
-        attempt,
-        error: err?.message || err,
-      });
-      if (attempt < attempts) {
-        await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
-      }
-    }
-  }
-  throw lastError;
 }
 
 export async function sendTicketEmail({
@@ -179,13 +100,14 @@ export async function sendTicketEmail({
 			<p style="margin:0;font-size:13px;color:#6b7280;">BrotherHood Nepal in collaboration with Nepal Leadership Technology (NLT)</p>
 		</div>
 	`;
-  const transporter = await getTransporter();
+
   const mailOptions = {
-    from: process.env.MAIL_USER || "no-reply@sindhuli.local",
+    from: `SindhuliBazzar <${process.env.MAIL_USER}>`,
     to: toEmail,
     subject,
     html,
   };
+
   if (qrContentBase64) {
     mailOptions.attachments = [
       {
@@ -198,5 +120,12 @@ export async function sendTicketEmail({
     ];
   }
 
-  return await sendWithRetry(transporter, mailOptions);
+  try {
+    const result = await transporter.sendMail(mailOptions);
+    console.log("✅ Email sent successfully to:", toEmail);
+    return result;
+  } catch (error) {
+    console.error("❌ Error sending email:", error);
+    throw error;
+  }
 }
