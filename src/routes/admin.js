@@ -1,11 +1,13 @@
 import { Router } from "express";
 import jwt from "jsonwebtoken";
-import { literal } from "sequelize";
+import { literal, Op } from "sequelize";
 import QRCode from "qrcode";
 import { validateAdminCredentials } from "../models/admin.js";
 import { Ticket, findTicketByToken, sanitizeTicket } from "../models/ticket.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { sendTicketEmail } from "../mailer.js";
+import { uploadQRToR2 } from "../utils/r2.js";
+import { buildWhatsAppUrl, buildWhatsAppMessage } from "../utils/whatsapp.js";
 
 const router = Router();
 
@@ -34,21 +36,67 @@ const STATUS_ORDER = literal(
 );
 
 const ALLOWED_LIMITS = new Set([10, 20, 50, 100]);
+const DEFAULT_LIMIT = 10; // Fixed to 10 items per page
+
+async function buildSanitizedTicketWithQr(ticket, req) {
+  if (!ticket) return null;
+  const sanitized = sanitizeTicket(ticket);
+  try {
+    const payload = JSON.stringify({ token: ticket.token });
+    sanitized.qrCode = await QRCode.toDataURL(payload);
+    // Use stored R2 URL if available, otherwise fallback
+    sanitized.qrImageUrl = ticket.qrImageUrl || sanitized.qrCode;
+  } catch (err) {
+    console.error("Failed to generate QR for ticket", ticket.id, err);
+    sanitized.qrCode = null;
+    sanitized.qrImageUrl = ticket.qrImageUrl || null;
+  }
+  return sanitized;
+}
 
 // GET /api/admin/tickets -> fetch tickets with pagination and filters
 router.get("/tickets", requireAdmin, async (req, res) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
-    let limit = parseInt(req.query.limit, 10) || 20;
+    let limit = parseInt(req.query.limit, 10) || 10;
     if (!ALLOWED_LIMITS.has(limit)) {
-      limit = 20;
+      limit = 10;
     }
-    const statusFilter = (req.query.status || "").toLowerCase();
     const offset = (page - 1) * limit;
 
+    // Backend filtering
+    const statusFilter = (req.query.status || "").toLowerCase();
+    const viewType = (req.query.view || "").toLowerCase(); // "review" or "book"
+    const quickFilter = (req.query.quickFilter || "").toLowerCase(); // "remaining", "scanned", "all"
+
     const where = {};
-    if (statusFilter && statusFilter !== "all") {
-      where.status = statusFilter;
+
+    // View-specific status filtering
+    if (viewType === "review") {
+      // Review page: only show pending, approved, cancelled
+      where.status = { [Op.in]: ["pending", "approved", "cancelled"] };
+      if (statusFilter && statusFilter !== "all") {
+        where.status = statusFilter;
+      }
+    } else if (viewType === "book") {
+      // Book page: only show approved, checkedin
+      where.status = { [Op.in]: ["approved", "checkedin"] };
+      if (statusFilter && statusFilter !== "all") {
+        where.status = statusFilter;
+      }
+    } else {
+      // Default: apply status filter if provided
+      if (statusFilter && statusFilter !== "all") {
+        where.status = statusFilter;
+      }
+    }
+
+    // Apply quick filters at DB level
+    if (quickFilter === "remaining") {
+      where.remaining = { [Op.gt]: 0 };
+    } else if (quickFilter === "scanned") {
+      where.remaining = 0;
+      where.scanCount = { [Op.gt]: 0 };
     }
 
     const { count, rows } = await Ticket.findAndCountAll({
@@ -61,15 +109,21 @@ router.get("/tickets", requireAdmin, async (req, res) => {
       ],
     });
 
-    const items = rows.map((ticket) => sanitizeTicket(ticket));
+    const items = rows;
+
+    // Build sanitized tickets with QR
+    const sanitizedItems = await Promise.all(
+      items.map((ticket) => buildSanitizedTicketWithQr(ticket, req))
+    );
+
     const totalPages = Math.max(Math.ceil(count / limit), 1);
 
     return res.json({
+      data: sanitizedItems,
       totalItems: count,
       totalPages,
       currentPage: page,
-      perPage: limit,
-      items,
+      limit,
     });
   } catch (e) {
     console.error(e);
@@ -80,8 +134,8 @@ router.get("/tickets", requireAdmin, async (req, res) => {
 // POST /api/admin/tickets/:id/approve -> send email with QR, mark as approved
 router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
   try {
-    const ticketId = parseInt(req.params.id, 10);
-    if (Number.isNaN(ticketId)) {
+    const ticketId = (req.params.id || "").trim();
+    if (!ticketId) {
       return res.status(400).json({ error: "Invalid ticket id" });
     }
     const ticket = await Ticket.findByPk(ticketId);
@@ -93,22 +147,36 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
       return res.status(400).json({ error: "Ticket already approved" });
     }
 
+    // Generate QR code
     const qrPayload = JSON.stringify({ token: ticket.token });
+    const qrBuffer = await QRCode.toBuffer(qrPayload, { type: "png" });
     const qrDataUrl = await QRCode.toDataURL(qrPayload);
+
+    // Upload QR to R2
+    let qrImageUrl = null;
+    try {
+      const filename = `ticket-${ticket.token}.png`;
+      qrImageUrl = await uploadQRToR2(qrBuffer, filename);
+      ticket.qrImageUrl = qrImageUrl;
+    } catch (r2Err) {
+      console.error("Failed to upload QR to R2:", r2Err);
+      // Continue without R2 URL, use data URL fallback
+    }
 
     let responseMessage = "Ticket approved and email sent";
     let mailError = null;
 
     try {
-      const result = await sendTicketEmail({
+      await sendTicketEmail({
         toEmail: ticket.email,
         name: ticket.name,
-        qrDataUrl,
+        qrDataUrl: qrImageUrl || qrDataUrl, // Use R2 URL if available
         ticketType: ticket.ticketType,
         quantity: ticket.quantity,
         unitPrice: ticket.unitPrice,
         totalPrice: ticket.price,
         vipSeats: ticket.vipSeats,
+        ticketNumber: ticket.ticketNumber,
       });
       ticket.emailSent = true;
       ticket.sentAt = new Date();
@@ -116,7 +184,7 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
       console.log("Ticket email sent", {
         ticketId: ticket.id,
         email: ticket.email,
-        nodemailerMessageId: result?.info?.messageId,
+        qrImageUrl,
       });
     } catch (mailErr) {
       mailError = mailErr;
@@ -135,7 +203,7 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
 
     const payload = {
       message: responseMessage,
-      ticket: sanitizeTicket(ticket),
+      ticket: await buildSanitizedTicketWithQr(ticket, req),
     };
     if (mailError) {
       payload.error = mailError?.message || String(mailError);
@@ -151,8 +219,8 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
 // POST /api/admin/tickets/:id/cancel -> mark as cancelled
 router.post("/tickets/:id/cancel", requireAdmin, async (req, res) => {
   try {
-    const ticketId = parseInt(req.params.id, 10);
-    if (Number.isNaN(ticketId)) {
+    const ticketId = (req.params.id || "").trim();
+    if (!ticketId) {
       return res.status(400).json({ error: "Invalid ticket id" });
     }
     const ticket = await Ticket.findByPk(ticketId);
@@ -163,11 +231,65 @@ router.post("/tickets/:id/cancel", requireAdmin, async (req, res) => {
 
     return res.json({
       message: "Ticket cancelled",
-      ticket: sanitizeTicket(ticket),
+      ticket: await buildSanitizedTicketWithQr(ticket, req),
     });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Failed to cancel ticket" });
+  }
+});
+
+// POST /api/admin/tickets/:id/whatsapp -> generate WhatsApp wa.me link with QR image
+router.post("/tickets/:id/whatsapp", requireAdmin, async (req, res) => {
+  try {
+    const ticketId = (req.params.id || "").trim();
+    if (!ticketId) {
+      return res.status(400).json({ error: "Invalid ticket id" });
+    }
+    const ticket = await Ticket.findByPk(ticketId);
+    if (!ticket) return res.status(404).json({ error: "Ticket not found" });
+
+    if (!ticket.phone) {
+      return res.status(400).json({ error: "Phone number not available" });
+    }
+
+    // Ensure QR is uploaded to R2
+    let qrImageUrl = ticket.qrImageUrl;
+    if (!qrImageUrl) {
+      const qrPayload = JSON.stringify({ token: ticket.token });
+      const qrBuffer = await QRCode.toBuffer(qrPayload, { type: "png" });
+      const filename = `ticket-${ticket.token}.png`;
+      try {
+        qrImageUrl = await uploadQRToR2(qrBuffer, filename);
+        ticket.qrImageUrl = qrImageUrl;
+        await ticket.save();
+      } catch (r2Err) {
+        console.error("Failed to upload QR to R2:", r2Err);
+        return res.status(500).json({
+          error: "Failed to generate QR image for WhatsApp",
+        });
+      }
+    }
+
+    // Build WhatsApp message with QR URL
+    const message = buildWhatsAppMessage(ticket, qrImageUrl);
+
+    // Generate wa.me URL
+    const whatsappUrl = buildWhatsAppUrl(ticket.phone, message);
+
+    // Mark as sent (user will open the link)
+    ticket.whatsappSent = true;
+    await ticket.save();
+
+    return res.json({
+      success: true,
+      whatsappSent: true,
+      whatsappUrl,
+      ticket: await buildSanitizedTicketWithQr(ticket, req),
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Failed to generate WhatsApp link" });
   }
 });
 
@@ -205,18 +327,21 @@ router.post("/verify", async (req, res) => {
           status: "cancelled",
           message:
             "Ticket cancelled. Please contact the event support team for assistance.",
+          ticket: await buildSanitizedTicketWithQr(ticket, req),
         });
       }
       if (ticket.remaining <= 0) {
         return res.json({
           status: "no_remaining",
           message: "Tickets already scanned — no people remaining.",
+          ticket: await buildSanitizedTicketWithQr(ticket, req),
         });
       }
       return res.json({
         status: "valid",
         message:
-          "Ticket booked successfully. Do not share with others. Please show this QR at the event gate.",
+          "Ticket booked successfully. Do not share with others. Show at the gate during the event.",
+        ticket: await buildSanitizedTicketWithQr(ticket, req),
       });
     }
 
@@ -224,7 +349,7 @@ router.post("/verify", async (req, res) => {
       return res.json({
         status: "cancelled",
         message: "Ticket is cancelled. Entry not permitted.",
-        ticket: sanitizeTicket(ticket),
+        ticket: await buildSanitizedTicketWithQr(ticket, req),
       });
     }
 
@@ -232,9 +357,11 @@ router.post("/verify", async (req, res) => {
       return res.json({
         status: "no_remaining",
         message: "Tickets already scanned — no people remaining.",
-        ticket: sanitizeTicket(ticket),
+        ticket: await buildSanitizedTicketWithQr(ticket, req),
       });
     }
+
+    const alreadyScanned = ticket.scanCount > 0;
 
     let checkInCount = parseInt(count, 10);
     if (!Number.isInteger(checkInCount) || checkInCount <= 0) {
@@ -243,8 +370,10 @@ router.post("/verify", async (req, res) => {
       } else {
         return res.json({
           status: "awaiting_count",
-          message: "Enter number of people to check in.",
-          ticket: sanitizeTicket(ticket),
+          message: alreadyScanned
+            ? `Already scanned. People remaining: ${ticket.remaining}`
+            : "Enter number of people to check in.",
+          ticket: await buildSanitizedTicketWithQr(ticket, req),
         });
       }
     }
@@ -264,7 +393,7 @@ router.post("/verify", async (req, res) => {
       status: "checked_in",
       message: `${checkInCount} people entered. ${ticket.remaining} remaining.`,
       entered: checkInCount,
-      ticket: sanitizeTicket(ticket),
+      ticket: await buildSanitizedTicketWithQr(ticket, req),
     });
   } catch (e) {
     console.error(e);

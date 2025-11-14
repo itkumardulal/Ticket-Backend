@@ -5,9 +5,15 @@ export const Ticket = sequelize.define(
   "tickets",
   {
     id: {
-      type: DataTypes.INTEGER.UNSIGNED,
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
+    },
+    ticketNumber: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: false,
       autoIncrement: true,
+      unique: true,
     },
     name: {
       type: DataTypes.STRING,
@@ -75,9 +81,19 @@ export const Ticket = sequelize.define(
       allowNull: false,
       defaultValue: 0,
     },
+    qrImageUrl: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    whatsappSent: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
   },
   {
     indexes: [
+      { fields: ["ticketNumber"], unique: true },
       { fields: ["token"], unique: true },
       { fields: ["email"] },
       { fields: ["phone"] },

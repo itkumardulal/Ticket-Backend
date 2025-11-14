@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { v4 as uuidv4 } from "uuid";
+import QRCode from "qrcode";
 import { Ticket, findTicketByToken } from "../models/ticket.js";
 
 const router = Router();
@@ -46,8 +47,8 @@ function normalizeTicketInput(body = {}) {
       quantity: 1,
       unitPrice,
       price: unitPrice,
-      remaining: 8,
-      vipSeats: 8,
+      remaining: 5,
+      vipSeats: 5,
     };
   }
 
@@ -117,6 +118,27 @@ router.get("/:token", async (req, res) => {
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Failed to get ticket" });
+  }
+});
+
+router.get("/:token/qr.png", async (req, res) => {
+  try {
+    const { token } = req.params;
+    if (!token) {
+      return res.status(400).json({ error: "Token required" });
+    }
+    const ticket = await findTicketByToken(token);
+    if (!ticket) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+    const payload = JSON.stringify({ token: ticket.token });
+    const buffer = await QRCode.toBuffer(payload, { type: "png", margin: 1 });
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    return res.send(buffer);
+  } catch (err) {
+    console.error("Failed to generate QR image", err);
+    return res.status(500).json({ error: "Failed to generate QR" });
   }
 });
 
