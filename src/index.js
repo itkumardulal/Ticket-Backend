@@ -13,7 +13,7 @@ import adminRouter from "./routes/admin.js";
 import { ensureDefaultAdmin } from "./models/admin.js";
 
 const app = express();
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT;
 
 // Security middleware
 app.use(
@@ -26,8 +26,8 @@ app.disable("x-powered-by");
 
 // CORS configuration - strict origins
 const allowedOrigins = [
-  process.env.ADMIN_URL || "http://localhost:5174",
-  process.env.CLIENT_URL || "http://localhost:5173",
+  process.env.ADMIN_URL ,
+  process.env.CLIENT_URL ,
 ].filter(Boolean);
 
 app.use(
@@ -74,7 +74,7 @@ async function start() {
     }, 60 * 60 * 1000); // Every hour
 
     app.listen(PORT, () => {
-      console.log(`Server listening on http://localhost:${PORT}`);
+      console.log(`Server listening on ${PORT}`);
     });
   } catch (err) {
     console.error("Failed to start server:", err);
