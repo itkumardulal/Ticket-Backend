@@ -38,17 +38,18 @@ function normalizeTicketInput(body = {}) {
 
   if (normalizedType === "vip") {
     const unitPrice = 10000;
+    const vipQuantity = 5; // VIP tickets always have quantity = 5
     return {
       token,
       name,
       email,
       phone,
       ticketType: "vip",
-      quantity: 1,
+      quantity: vipQuantity, // Force quantity = 5
       unitPrice,
-      price: unitPrice,
-      remaining: 5,
-      vipSeats: 5,
+      price: unitPrice * vipQuantity, // Recalculate total price based on enforced quantity
+      remaining: vipQuantity,
+      vipSeats: vipQuantity,
     };
   }
 
