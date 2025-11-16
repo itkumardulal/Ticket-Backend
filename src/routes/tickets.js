@@ -47,7 +47,7 @@ function normalizeTicketInput(body = {}) {
       ticketType: "vip",
       quantity: vipQuantity, // Force quantity = 5
       unitPrice,
-      price: unitPrice * vipQuantity, // Recalculate total price based on enforced quantity
+      price: unitPrice, // Recalculate total price based on enforced quantity
       remaining: vipQuantity,
       vipSeats: vipQuantity,
     };
