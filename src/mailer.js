@@ -136,7 +136,6 @@ export async function sendTicketEmail({
 
   try {
     await sgMail.send(msg);
-    console.log("✅ Ticket email sent successfully to:", toEmail);
   } catch (error) {
     console.error(
       "❌ Ticket email failed:",

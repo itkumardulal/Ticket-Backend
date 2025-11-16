@@ -1,33 +1,143 @@
 import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { literal, Op } from "sequelize";
+import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
 import { validateAdminCredentials } from "../models/admin.js";
 import { Ticket, findTicketByToken, sanitizeTicket } from "../models/ticket.js";
+import {
+  createRefreshToken,
+  findRefreshToken,
+  revokeRefreshToken,
+} from "../models/refreshToken.js";
 import { requireAdmin } from "../middleware/auth.js";
+import { loginRateLimiter } from "../middleware/rateLimit.js";
 import { sendTicketEmail } from "../mailer.js";
 import { uploadQRToR2 } from "../utils/r2.js";
 import { buildWhatsAppUrl, buildWhatsAppMessage } from "../utils/whatsapp.js";
 
 const router = Router();
 
-// POST /api/admin/login -> returns JWT
-router.post("/login", async (req, res) => {
+const JWT_SECRET = process.env.JWT_SECRET || "secret";
+const ACCESS_TOKEN_EXPIRY = "15m"; // 15 minutes
+const REFRESH_TOKEN_EXPIRY_DAYS = 7; // 7 days
+
+// POST /api/admin/login -> returns access token + sets refresh token cookie
+router.post("/login", loginRateLimiter, async (req, res) => {
   try {
     const { username, password } = req.body || {};
     if (!username || !password)
       return res.status(400).json({ error: "Username and password required" });
     const admin = await validateAdminCredentials(username, password);
     if (!admin) return res.status(401).json({ error: "Invalid credentials" });
-    const token = jwt.sign(
-      { id: admin.id, username: admin.username },
-      process.env.JWT_SECRET || "secret",
-      { expiresIn: "8h" }
+
+    // Generate access token (15 minutes)
+    const accessToken = jwt.sign(
+      { id: admin.id, username: admin.username, type: "access" },
+      JWT_SECRET,
+      { expiresIn: ACCESS_TOKEN_EXPIRY }
     );
-    return res.json({ token });
+
+    // Generate refresh token (7 days)
+    const refreshTokenValue = uuidv4();
+    const refreshTokenExpiresAt = new Date();
+    refreshTokenExpiresAt.setDate(
+      refreshTokenExpiresAt.getDate() + REFRESH_TOKEN_EXPIRY_DAYS
+    );
+
+    // Store refresh token in database
+    await createRefreshToken(
+      admin.id,
+      refreshTokenValue,
+      refreshTokenExpiresAt
+    );
+
+    // Set refresh token as HTTP-only, Secure cookie
+    const isProduction = process.env.NODE_ENV === "production";
+    res.cookie("refreshToken", refreshTokenValue, {
+      httpOnly: true,
+      secure: isProduction, // HTTPS only in production
+      sameSite: isProduction ? "none" : "lax", // Allow cross-site in production
+      maxAge: REFRESH_TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000, // 7 days in ms
+      path: "/api/admin",
+    });
+
+    return res.json({ accessToken });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Login failed" });
+  }
+});
+
+// POST /api/admin/refresh -> refresh access token using refresh token cookie
+router.post("/refresh", async (req, res) => {
+  try {
+    const refreshToken = req.cookies?.refreshToken;
+    if (!refreshToken) {
+      return res.status(401).json({ error: "Refresh token required" });
+    }
+
+    // Find and validate refresh token
+    const tokenRecord = await findRefreshToken(refreshToken);
+    if (!tokenRecord) {
+      return res
+        .status(401)
+        .json({ error: "Invalid or expired refresh token" });
+    }
+
+    // Revoke old refresh token (token rotation)
+    await revokeRefreshToken(refreshToken);
+
+    // Generate new access token
+    const accessToken = jwt.sign(
+      { id: tokenRecord.adminId, type: "access" },
+      JWT_SECRET,
+      { expiresIn: ACCESS_TOKEN_EXPIRY }
+    );
+
+    // Generate new refresh token
+    const newRefreshTokenValue = uuidv4();
+    const refreshTokenExpiresAt = new Date();
+    refreshTokenExpiresAt.setDate(
+      refreshTokenExpiresAt.getDate() + REFRESH_TOKEN_EXPIRY_DAYS
+    );
+
+    // Store new refresh token
+    await createRefreshToken(
+      tokenRecord.adminId,
+      newRefreshTokenValue,
+      refreshTokenExpiresAt
+    );
+
+    // Set new refresh token cookie
+    const isProduction = process.env.NODE_ENV === "production";
+    res.cookie("refreshToken", newRefreshTokenValue, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? "none" : "lax",
+      maxAge: REFRESH_TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
+      path: "/api/admin",
+    });
+
+    return res.json({ accessToken });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Token refresh failed" });
+  }
+});
+
+// POST /api/admin/logout -> revoke refresh token
+router.post("/logout", requireAdmin, async (req, res) => {
+  try {
+    const refreshToken = req.cookies?.refreshToken;
+    if (refreshToken) {
+      await revokeRefreshToken(refreshToken);
+    }
+    res.clearCookie("refreshToken", { path: "/api/admin" });
+    return res.json({ message: "Logged out successfully" });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Logout failed" });
   }
 });
 
@@ -181,11 +291,6 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
       ticket.emailSent = true;
       ticket.sentAt = new Date();
       ticket.status = "approved";
-      console.log("Ticket email sent", {
-        ticketId: ticket.id,
-        email: ticket.email,
-        qrImageUrl,
-      });
     } catch (mailErr) {
       mailError = mailErr;
       responseMessage = "Email failed to send — ticket returned to pending";
@@ -298,7 +403,10 @@ function isAdminRequest(req) {
   if (!authHeader.startsWith("Bearer ")) return null;
   const tokenStr = authHeader.slice(7);
   try {
-    return jwt.verify(tokenStr, process.env.JWT_SECRET || "secret");
+    const payload = jwt.verify(tokenStr, JWT_SECRET);
+    // Verify it's an access token
+    if (payload.type !== "access") return null;
+    return payload;
   } catch (err) {
     return null;
   }
