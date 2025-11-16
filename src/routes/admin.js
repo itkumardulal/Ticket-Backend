@@ -308,41 +308,33 @@ function isAdminRequest(req) {
 router.post("/verify", async (req, res) => {
   try {
     const { token, count } = req.body || {};
-    if (!token) return res.status(400).json({ error: "Token required" });
+
+    const adminPayload = isAdminRequest(req);
+    const isAdmin = Boolean(adminPayload);
+
+    // For non-admin, return plain text even if token is missing
+    if (!token) {
+      if (!isAdmin) {
+        return res.type("text/plain").send("https://sindhulibazar.com/");
+      }
+      return res.status(400).json({ error: "Token required" });
+    }
 
     const ticket = await findTicketByToken(token);
     if (!ticket) {
+      // For non-admin, return plain text even for invalid QR
+      if (!isAdmin) {
+        return res.type("text/plain").send("https://sindhulibazar.com/");
+      }
       return res.status(404).json({
         error: "Invalid QR",
         message: "Invalid QR",
       });
     }
 
-    const adminPayload = isAdminRequest(req);
-    const isAdmin = Boolean(adminPayload);
-
     if (!isAdmin) {
-      if (ticket.status === "cancelled") {
-        return res.json({
-          status: "cancelled",
-          message:
-            "Ticket cancelled. Please contact the event support team for assistance.",
-          ticket: await buildSanitizedTicketWithQr(ticket, req),
-        });
-      }
-      if (ticket.remaining <= 0) {
-        return res.json({
-          status: "no_remaining",
-          message: "Tickets already scanned — no people remaining.",
-          ticket: await buildSanitizedTicketWithQr(ticket, req),
-        });
-      }
-      return res.json({
-        status: "valid",
-        message:
-          "Ticket booked successfully. Do not share with others. Show at the gate during the event.",
-        ticket: await buildSanitizedTicketWithQr(ticket, req),
-      });
+      // Non-admin: return plain text, no JSON, no ticket details or token
+      return res.type("text/plain").send("https://sindhulibazar.com/");
     }
 
     if (ticket.status === "cancelled") {
@@ -354,9 +346,14 @@ router.post("/verify", async (req, res) => {
     }
 
     if (ticket.remaining <= 0) {
+      const lastScanTime = ticket.lastScanAt
+        ? new Date(ticket.lastScanAt).toLocaleString()
+        : null;
       return res.json({
         status: "no_remaining",
-        message: "Tickets already scanned — no people remaining.",
+        message: lastScanTime
+          ? `Ticket already scanned — no people remaining. Last scan time: ${lastScanTime}.`
+          : "Ticket already scanned — no people remaining.",
         ticket: await buildSanitizedTicketWithQr(ticket, req),
       });
     }
@@ -382,6 +379,11 @@ router.post("/verify", async (req, res) => {
       checkInCount = ticket.remaining;
     }
 
+    const originalRemaining = ticket.remaining;
+
+    // Update lastScanAt only when scanning happens
+    ticket.lastScanAt = new Date();
+
     ticket.remaining -= checkInCount;
     ticket.scanCount += checkInCount;
     if (ticket.remaining === 0) {
@@ -389,9 +391,22 @@ router.post("/verify", async (req, res) => {
     }
     await ticket.save();
 
+    // Build message based on scan scenario
+    let message = "";
+    if (originalRemaining === 1) {
+      // Special case: if only 1 person remaining, show specific message
+      message = "Ticket scanned successfully. Let 1 person enter.";
+    } else if (checkInCount < originalRemaining) {
+      message = `Enter only ${checkInCount} people — ticket scanned successfully.`;
+    } else if (ticket.remaining === 0) {
+      message = "Ticket scanned successfully. No people remaining.";
+    } else {
+      message = `${checkInCount} people entered. ${ticket.remaining} remaining.`;
+    }
+
     return res.json({
       status: "checked_in",
-      message: `${checkInCount} people entered. ${ticket.remaining} remaining.`,
+      message,
       entered: checkInCount,
       ticket: await buildSanitizedTicketWithQr(ticket, req),
     });

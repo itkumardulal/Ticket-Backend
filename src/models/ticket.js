@@ -90,6 +90,10 @@ export const Ticket = sequelize.define(
       allowNull: false,
       defaultValue: false,
     },
+    lastScanAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
   },
   {
     indexes: [

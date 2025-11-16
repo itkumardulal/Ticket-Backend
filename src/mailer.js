@@ -1,4 +1,5 @@
 import sgMail from "@sendgrid/mail";
+import axios from "axios";
 
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
@@ -14,7 +15,7 @@ function formatCurrency(value) {
 export async function sendTicketEmail({
   toEmail,
   name,
-  qrDataUrl, // Can be R2 URL or data URL
+  qrDataUrl, // Should be R2 URL
   ticketType,
   quantity,
   unitPrice,
@@ -23,22 +24,9 @@ export async function sendTicketEmail({
   ticketNumber,
 }) {
   const subject = "Sindhuli Concert Ticket - BrotherHood Nepal x NLT";
-  let qrContentBase64 = null;
-  let qrContentType = "image/png";
-  if (qrDataUrl && qrDataUrl.startsWith("data:")) {
-    const match = qrDataUrl.match(/^data:(.+);base64,(.+)$/);
-    if (match) {
-      qrContentType = match[1] || "image/png";
-      qrContentBase64 = match[2];
-    }
-  }
 
   const ticketLabel =
     ticketType === "vip" ? "VIP Table (5 Persons)" : "Normal Ticket";
-
-  const inlineQrSrc = qrContentBase64
-    ? `data:${qrContentType};base64,${qrContentBase64}`
-    : qrDataUrl || "";
 
   const detailsHtml = `
     <table style="width:100%;max-width:520px;border-collapse:collapse;font-size:14px;margin-top:16px;">
@@ -92,21 +80,18 @@ export async function sendTicketEmail({
         </p>`
       : "";
 
-  // Use R2 URL if provided (qrDataUrl can be R2 URL or data URL)
-  const qrImageSrc = qrDataUrl?.startsWith("http") ? qrDataUrl : inlineQrSrc;
+  const qrLinkHtml = qrDataUrl
+    ? `<p style="margin:16px 0;padding:12px 16px;border-radius:8px;background:#f3f4f6;color:#111;">
+        QR Code Link: <a href="${qrDataUrl}" style="color:#2563eb;text-decoration:underline;">${qrDataUrl}</a>
+      </p>`
+    : "";
 
   const html = `
     <div style="font-family: Arial, sans-serif;color:#111;">
       <h2 style="margin-bottom:8px;">Sindhuli Concert - Your Ticket</h2>
       <p style="margin:0 0 12px;">Hello ${name},</p>
       <p style="margin:0 0 16px;">Thank you for choosing BrotherHood Nepal x NLT. Please present this QR code at the event entrance.</p>
-      <p style="margin:0 0 24px;text-align:center;">
-        ${
-          qrImageSrc
-            ? `<img src="${qrImageSrc}" alt="Ticket QR" style="max-width:280px;border:1px solid #e5e7eb;border-radius:8px;display:block;margin:0 auto;" />`
-            : '<span style="display:inline-block;padding:12px 16px;border-radius:8px;background:#f3f4f6;color:#6b7280;">QR code unavailable</span>'
-        }
-      </p>
+      ${qrLinkHtml}
       ${vipInfo}
       ${detailsHtml}
       <p style="margin:16px 0 0;font-size:13px;color:#4b5563;">Show this QR code at the gate during the event. Do not share with others.</p>
@@ -114,6 +99,29 @@ export async function sendTicketEmail({
       <p style="margin:0;font-size:13px;color:#6b7280;">BrotherHood Nepal in collaboration with Nepal Leadership Technology (NLT)</p>
     </div>
   `;
+
+  // Fetch QR from R2 and attach as base64 string
+  let attachments = [];
+  if (qrDataUrl && qrDataUrl.startsWith("http")) {
+    try {
+      const response = await axios.get(qrDataUrl, {
+        responseType: "arraybuffer",
+      });
+      // Convert buffer to base64 string for SendGrid
+      const base64Content = Buffer.from(response.data).toString("base64");
+      attachments = [
+        {
+          filename: "ticket-qr.png",
+          content: base64Content,
+          type: "image/png",
+          disposition: "attachment",
+        },
+      ];
+    } catch (err) {
+      console.error("Failed to fetch QR from R2:", err);
+      // Continue without attachment
+    }
+  }
 
   const msg = {
     to: toEmail,
@@ -123,17 +131,7 @@ export async function sendTicketEmail({
     },
     subject,
     html,
-    attachments: qrContentBase64
-      ? [
-          {
-            content: qrContentBase64,
-            filename: "ticket-qr.png",
-            type: qrContentType,
-            disposition: "inline",
-            content_id: "ticketqr",
-          },
-        ]
-      : [],
+    attachments,
   };
 
   try {

@@ -43,7 +43,7 @@ export function buildWhatsAppMessage(ticket, qrImageUrl) {
   )}\n\nPlease present your QR code at the event entrance and avoid sharing it publicly.\n\n`;
 
   if (qrImageUrl) {
-    message += `QR Code: ${qrImageUrl}\n\n`;
+    message += `QR Code Link: ${qrImageUrl}\n\n`;
   }
 
   message += `Sent via sindhulibazar.com\nThank you!`;

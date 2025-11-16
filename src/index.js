@@ -25,7 +25,7 @@ app.use("/api/admin", adminRouter);
 async function start() {
   try {
     await sequelize.authenticate();
-    await sequelize.sync({ alter: false });
+    await sequelize.sync({ force:false });
     await ensureDefaultAdmin();
     app.listen(PORT, () => {
       console.log(`Server listening on http://localhost:${PORT}`);
