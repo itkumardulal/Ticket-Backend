@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { literal, Op } from "sequelize";
 import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
+import sharp from "sharp";
 import { validateAdminCredentials } from "../models/admin.js";
 import { Ticket, findTicketByToken, sanitizeTicket } from "../models/ticket.js";
 import {
@@ -14,7 +15,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import { loginRateLimiter } from "../middleware/rateLimit.js";
 import { sendTicketEmail } from "../mailer.js";
 import { uploadQRToR2 } from "../utils/r2.js";
-import { buildWhatsAppUrl, buildWhatsAppMessage } from "../utils/whatsapp.js";
+import { buildWhatsAppMessage } from "../utils/whatsapp.js";
 
 const router = Router();
 
@@ -148,6 +149,127 @@ const STATUS_ORDER = literal(
 const ALLOWED_LIMITS = new Set([10, 20, 50, 100]);
 const DEFAULT_LIMIT = 10; // Fixed to 10 items per page
 
+/**
+ * Generate final ticket image with background + QR + details
+ * @param {string} qrUrl - QR code image URL
+ * @param {Object} ticket - Ticket object
+ * @returns {Promise<Buffer>} Final ticket image buffer
+ */
+async function generateFinalTicketImage({ qrUrl, ticket }) {
+  const CANVAS_WIDTH = 700;
+  const CANVAS_HEIGHT = 420;
+  const QR_SIZE = 180;
+  const QR_MARGIN = 24;
+
+  // Fetch background image
+  const bgResponse = await fetch("https://i.imgur.com/8Xq8GDi.jpeg");
+  const bgBuffer = await bgResponse.arrayBuffer();
+
+  // Fetch QR code image
+  const qrResponse = await fetch(qrUrl);
+  const qrBuffer = await qrResponse.arrayBuffer();
+
+  // Format booked date
+  const bookedDate = ticket.createdAt
+    ? new Date(ticket.createdAt).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      })
+    : new Date().toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      });
+
+  // Format price
+  const price = ticket.price || "0.00";
+  const formattedPrice = typeof price === "string" ? price : price.toFixed(2);
+
+  // Format ticket type and quantity
+  const ticketTypeText = ticket.ticketType === "vip" ? "VIP" : "Normal";
+  const quantityValue =
+    typeof ticket.quantity === "number"
+      ? ticket.quantity
+      : Number(ticket.quantity) || 1;
+
+  // Create SVG with ticket details sized to the canvas
+  const svgText = `
+    <svg width='${CANVAS_WIDTH}' height='${CANVAS_HEIGHT}'>
+      <style>
+        .box-text {
+          fill: #0f172a;
+          font-size: 18px;
+          font-weight: 700;
+          font-family: Arial, sans-serif;
+        }
+.middle-text {
+  fill: #e63946;                     /* SindhuliBazar red */
+  font-size: 18px;
+  font-weight: 600;
+  font-family: "Arial", sans-serif;
+  text-decoration: underline;
+  letter-spacing: 0.5px;
+
+  /* Highlight background */
+  paint-order: stroke;
+  stroke: #fff7e6;                   /* soft warm yellow outline */
+  stroke-width: 6px;                 /* creates rounded highlight look */
+
+  /* Rounded highlight effect */
+  stroke-linejoin: round;
+}
+
+
+      </style>
+      <!-- Left side boxes: Ticket No, Type, Price -->
+      <text x='100' y='210' class='box-text'>${
+        ticket.ticketNumber || "--"
+      }</text>
+      <text x='105' y='270' class='box-text'>${ticketTypeText}</text>
+      <text x='70' y='330' class='box-text'>${formattedPrice}</text>
+      
+      <!-- Middle section: Name, Booked Date, Quantity -->
+      <text x='185' y='220' class='middle-text'>${ticket.name || "--"}</text>
+      <text x='185' y='250' class='middle-text'>${bookedDate}</text>
+      <text x='185' y='280' class='middle-text'>Quantity: ${quantityValue}</text>
+    </svg>`;
+
+  // Get background image dimensions to calculate QR position
+  const bgImage = sharp(Buffer.from(bgBuffer));
+  const bgMetadata = await bgImage.metadata();
+  const bgWidth = bgMetadata.width || CANVAS_WIDTH;
+  const bgHeight = bgMetadata.height || CANVAS_HEIGHT;
+
+  // Resize background if needed to match our target size
+  const resizedBg = await bgImage
+    .resize(CANVAS_WIDTH, CANVAS_HEIGHT, {
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 1 },
+    })
+    .toBuffer();
+
+  // Resize QR code to appropriate size (around 200x200)
+  const qrResized = await sharp(Buffer.from(qrBuffer))
+    .resize(QR_SIZE, QR_SIZE, { fit: "contain" })
+    .toBuffer();
+
+  // Position QR code on right side and bottom
+  const qrLeft = CANVAS_WIDTH - QR_SIZE - QR_MARGIN;
+  const qrTop = CANVAS_HEIGHT - QR_SIZE - QR_MARGIN - 60;
+
+  // Composite images
+  const finalImage = await sharp(resizedBg)
+    .composite([
+      { input: qrResized, top: qrTop, left: qrLeft },
+      { input: Buffer.from(svgText), top: 0, left: 0 },
+    ])
+    .png({ compressionLevel: 9, adaptiveFiltering: true, palette: true })
+    .toBuffer();
+
+  return finalImage;
+}
+
 async function buildSanitizedTicketWithQr(ticket, req) {
   if (!ticket) return null;
   const sanitized = sanitizeTicket(ticket);
@@ -273,6 +395,32 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
       // Continue without R2 URL, use data URL fallback
     }
 
+    // Generate final ticket image with background + QR + details
+    let finalImageUrl = null;
+    if (qrImageUrl) {
+      try {
+        const finalImageBuffer = await generateFinalTicketImage({
+          qrUrl: qrImageUrl,
+          ticket: {
+            name: ticket.name,
+            ticketNumber: ticket.ticketNumber,
+            ticketType: ticket.ticketType,
+            quantity: ticket.quantity,
+            price: ticket.price,
+            createdAt: ticket.createdAt,
+          },
+        });
+
+        // Upload final image to R2
+        const finalFilename = `ticket-final-${ticket.token}.png`;
+        finalImageUrl = await uploadQRToR2(finalImageBuffer, finalFilename);
+        ticket.finalImageUrl = finalImageUrl;
+      } catch (finalErr) {
+        console.error("Failed to generate final ticket image:", finalErr);
+        // Continue without final image
+      }
+    }
+
     let responseMessage = "Ticket approved and email sent";
     let mailError = null;
 
@@ -280,7 +428,7 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
       await sendTicketEmail({
         toEmail: ticket.email,
         name: ticket.name,
-        qrDataUrl: qrImageUrl || qrDataUrl, // Use R2 URL if available
+        finalImageUrl: finalImageUrl || qrImageUrl || qrDataUrl, // Use final image URL if available
         ticketType: ticket.ticketType,
         quantity: ticket.quantity,
         unitPrice: ticket.unitPrice,
@@ -358,15 +506,17 @@ router.post("/tickets/:id/whatsapp", requireAdmin, async (req, res) => {
       return res.status(400).json({ error: "Phone number not available" });
     }
 
-    // Ensure QR is uploaded to R2
-    let qrImageUrl = ticket.qrImageUrl;
-    if (!qrImageUrl) {
+    // Use final image URL if available, otherwise use QR image URL
+    let imageUrl = ticket.finalImageUrl || ticket.qrImageUrl;
+
+    // If no final image, ensure QR is uploaded to R2
+    if (!imageUrl) {
       const qrPayload = JSON.stringify({ token: ticket.token });
       const qrBuffer = await QRCode.toBuffer(qrPayload, { type: "png" });
       const filename = `ticket-${ticket.token}.png`;
       try {
-        qrImageUrl = await uploadQRToR2(qrBuffer, filename);
-        ticket.qrImageUrl = qrImageUrl;
+        imageUrl = await uploadQRToR2(qrBuffer, filename);
+        ticket.qrImageUrl = imageUrl;
         await ticket.save();
       } catch (r2Err) {
         console.error("Failed to upload QR to R2:", r2Err);
@@ -376,11 +526,24 @@ router.post("/tickets/:id/whatsapp", requireAdmin, async (req, res) => {
       }
     }
 
-    // Build WhatsApp message with QR URL
-    const message = buildWhatsAppMessage(ticket, qrImageUrl);
+    // Build WhatsApp message with ticket details
+    const message = buildWhatsAppMessage(
+      {
+        ...ticket.toJSON(),
+        totalPrice: ticket.price,
+        finalImageUrl: ticket.finalImageUrl,
+      },
+      imageUrl
+    );
 
-    // Generate wa.me URL
-    const whatsappUrl = buildWhatsAppUrl(ticket.phone, message);
+    // Generate WhatsApp URL with encoded message
+    const cleanPhone = ticket.phone.replace(/[^0-9]/g, "");
+    const phoneNumber = cleanPhone.startsWith("977")
+      ? cleanPhone
+      : `977${cleanPhone}`;
+    const whatsappUrl = `https://api.whatsapp.com/send?phone=${phoneNumber}&text=${encodeURIComponent(
+      message
+    )}`;
 
     // Mark as sent (user will open the link)
     ticket.whatsappSent = true;

@@ -15,7 +15,7 @@ function formatCurrency(value) {
 export async function sendTicketEmail({
   toEmail,
   name,
-  qrDataUrl, // Should be R2 URL
+  finalImageUrl, // Final ticket image URL
   ticketType,
   quantity,
   unitPrice,
@@ -80,9 +80,9 @@ export async function sendTicketEmail({
         </p>`
       : "";
 
-  const qrLinkHtml = qrDataUrl
+  const qrLinkHtml = finalImageUrl
     ? `<p style="margin:16px 0;padding:12px 16px;border-radius:8px;background:#f3f4f6;color:#111;">
-        QR Code Link: <a href="${qrDataUrl}" style="color:#2563eb;text-decoration:underline;">${qrDataUrl}</a>
+        Ticket Image Link: <a href="${finalImageUrl}" style="color:#2563eb;text-decoration:underline;">${finalImageUrl}</a>
       </p>`
     : "";
 
@@ -100,25 +100,25 @@ export async function sendTicketEmail({
     </div>
   `;
 
-  // Fetch QR from R2 and attach as base64 string
+  // Fetch final ticket image from R2 and attach as base64 string
   let attachments = [];
-  if (qrDataUrl && qrDataUrl.startsWith("http")) {
+  if (finalImageUrl && finalImageUrl.startsWith("http")) {
     try {
-      const response = await axios.get(qrDataUrl, {
+      const response = await axios.get(finalImageUrl, {
         responseType: "arraybuffer",
       });
       // Convert buffer to base64 string for SendGrid
       const base64Content = Buffer.from(response.data).toString("base64");
       attachments = [
         {
-          filename: "ticket-qr.png",
+          filename: "ticket.png",
           content: base64Content,
           type: "image/png",
           disposition: "attachment",
         },
       ];
     } catch (err) {
-      console.error("Failed to fetch QR from R2:", err);
+      console.error("Failed to fetch ticket image from R2:", err);
       // Continue without attachment
     }
   }

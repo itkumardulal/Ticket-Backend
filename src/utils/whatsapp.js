@@ -24,29 +24,40 @@ export function buildWhatsAppUrl(toPhone, message) {
  * Build WhatsApp message for ticket with QR image URL
  */
 export function buildWhatsAppMessage(ticket, qrImageUrl) {
-  const priceValue = Number(ticket.price || 0).toLocaleString();
-  const ticketTypeLabel =
-    ticket.ticketType === "vip" ? "VIP Table (5 Persons)" : "Normal Ticket";
+  const totalPrice =
+    ticket.totalPrice ??
+    ticket.price ??
+    (ticket.unitPrice
+      ? Number(ticket.unitPrice) * Number(ticket.quantity || 1)
+      : 0);
 
-  const details = [
-    ticket.ticketNumber ? `• Ticket Number: ${ticket.ticketNumber}` : null,
-    `• Ticket Type: ${ticketTypeLabel}`,
-    `• Quantity: ${ticket.quantity}`,
-    `• Total Price: Rs. ${priceValue}`,
-    `• Status: ${ticket.status}`,
-  ].filter(Boolean);
+  const qrLink = ticket.finalImageUrl || qrImageUrl || "";
 
-  let message = `Hello ${
-    ticket.name
-  },\n\nSindhuli Concert - BrotherHood Nepal x NLT\n\nYour ticket has been processed with the following details:\n${details.join(
-    "\n"
-  )}\n\nPlease present your QR code at the event entrance and avoid sharing it publicly.\n\n`;
+  const message = `
+Hello ${ticket.name},
 
-  if (qrImageUrl) {
-    message += `QR Code Link: ${qrImageUrl}\n\n`;
-  }
+Sindhuli Concert - BrotherHood Nepal x NLT
 
-  message += `Sent via sindhulibazar.com\nThank you!`;
+Your ticket has been processed with the following details:
 
-  return message;
+• Ticket Number: ${ticket.ticketNumber}
+
+• Ticket Type: ${ticket.ticketType}
+
+• Quantity: ${ticket.quantity}
+
+• Total Price: Rs. ${totalPrice}
+
+• Status: ${ticket.status}
+
+Please present your QR code at the event entrance and avoid sharing it publicly.
+
+QR Code Link: ${qrLink}
+
+Sent via sindhulibazar.com
+
+Thank you!
+`;
+
+  return message.trim();
 }

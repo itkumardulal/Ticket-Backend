@@ -94,6 +94,10 @@ export const Ticket = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
     },
+    finalImageUrl: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
   },
   {
     indexes: [

@@ -7,18 +7,41 @@ const router = Router();
 
 // Dynamic pricing based on date ranges
 function calculatePrice() {
-  const now = new Date();
+  // ✅ UPDATED DATE–PRICE ARRAY (your new data here)
+
+  const normalize = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const now = normalize(new Date());
+
   const ticketPrices = [
-    { start: new Date("2025-11-11"), end: new Date("2025-11-17"), price: 500 },
-    { start: new Date("2025-11-17"), end: new Date("2025-11-23"), price: 750 },
-    { start: new Date("2025-11-24"), end: new Date("2025-12-28"), price: 1000 },
+    {
+      start: normalize(new Date("2025-11-11")),
+      end: normalize(new Date("2025-11-17")),
+      price: 500,
+    },
+    {
+      start: normalize(new Date("2025-11-18")),
+      end: normalize(new Date("2025-11-23")),
+      price: 750,
+    },
+    {
+      start: normalize(new Date("2025-11-24")),
+      end: normalize(new Date("2025-12-10")),
+      price: 900,
+    },
+    {
+      start: normalize(new Date("2025-12-11")),
+      end: normalize(new Date("2025-12-28")),
+      price: 1200,
+    },
   ];
 
+  // 🔁 SAME LOGIC (not touched)
   for (const range of ticketPrices) {
     if (now >= range.start && now <= range.end) {
       return range.price;
     }
   }
+
   // Default price if outside all ranges
   return 1000;
 }
@@ -38,18 +61,17 @@ function normalizeTicketInput(body = {}) {
 
   if (normalizedType === "vip") {
     const unitPrice = 10000;
-    const vipQuantity = 5; // VIP tickets always have quantity = 5
     return {
       token,
       name,
       email,
       phone,
       ticketType: "vip",
-      quantity: vipQuantity, // Force quantity = 5
+      quantity: 1,
       unitPrice,
-      price: unitPrice, // Recalculate total price based on enforced quantity
-      remaining: vipQuantity,
-      vipSeats: vipQuantity,
+      price: unitPrice,
+      remaining: 5,
+      vipSeats: 5,
     };
   }
 
