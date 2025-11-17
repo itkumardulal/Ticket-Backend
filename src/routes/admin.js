@@ -3,7 +3,7 @@ import jwt from "jsonwebtoken";
 import { literal, Op } from "sequelize";
 import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
-import { Resvg } from "@resvg/resvg-js";
+import sharp from "sharp";
 import { validateAdminCredentials } from "../models/admin.js";
 import { Ticket, findTicketByToken, sanitizeTicket } from "../models/ticket.js";
 import {
@@ -161,26 +161,16 @@ async function generateFinalTicketImage({ qrUrl, ticket }) {
   const QR_SIZE = 180;
   const QR_MARGIN = 24;
 
-  const [bgResponse] = await Promise.all([
-    fetch("https://i.imgur.com/8Xq8GDi.jpeg"),
-  ]);
+  const bgResponse = await fetch("https://i.imgur.com/8Xq8GDi.jpeg");
+  const bgBuffer = Buffer.from(await bgResponse.arrayBuffer());
 
-  const bgBuffer = await bgResponse.arrayBuffer();
-  const bgBase64 = Buffer.from(bgBuffer).toString("base64");
-
-  let qrBase64;
-  let qrMimeType = "image/png";
+  let qrBuffer;
   if (qrUrl.startsWith("data:")) {
-    const [, meta, base64Data] = qrUrl.match(/^data:(.+?);base64,(.+)$/i) || [];
-    if (meta) {
-      qrMimeType = meta;
-    }
-    qrBase64 = base64Data || "";
+    const [, base64Data] = qrUrl.split(",");
+    qrBuffer = Buffer.from(base64Data || "", "base64");
   } else {
     const qrResponse = await fetch(qrUrl);
-    const qrBuffer = await qrResponse.arrayBuffer();
-    qrBase64 = Buffer.from(qrBuffer).toString("base64");
-    qrMimeType = qrResponse.headers.get("content-type") || qrMimeType;
+    qrBuffer = Buffer.from(await qrResponse.arrayBuffer());
   }
 
   const bookedDate = ticket.createdAt
@@ -208,32 +198,28 @@ async function generateFinalTicketImage({ qrUrl, ticket }) {
   const qrTop = CANVAS_HEIGHT - QR_SIZE - QR_MARGIN - 60;
 
   const svgText = `
-    <svg width='${CANVAS_WIDTH}' height='${CANVAS_HEIGHT}' viewBox='0 0 ${CANVAS_WIDTH} ${CANVAS_HEIGHT}' xmlns='http://www.w3.org/2000/svg'>
-      <defs>
-        <style>
-          .box-text {
-            fill: #0f172a;
-            font-size: 18px;
-            font-weight: 700;
-            font-family: "Arial", sans-serif;
-          }
-          .middle-text {
-            fill: #e63946;
-            font-size: 18px;
-            font-weight: 600;
-            font-family: "Arial", sans-serif;
-            text-decoration: underline;
-            letter-spacing: 0.5px;
-            paint-order: stroke;
-            stroke: #fff7e6;
-            stroke-width: 6px;
-            stroke-linejoin: round;
-          }
-        </style>
-      </defs>
-      <rect width='100%' height='100%' fill='#000000' />
-      <image href='data:image/jpeg;base64,${bgBase64}' width='${CANVAS_WIDTH}' height='${CANVAS_HEIGHT}' preserveAspectRatio='xMidYMid meet' />
-      <image href='data:${qrMimeType};base64,${qrBase64}' x='${qrLeft}' y='${qrTop}' width='${QR_SIZE}' height='${QR_SIZE}' preserveAspectRatio='xMidYMid meet' />
+    <svg width='${CANVAS_WIDTH}' height='${CANVAS_HEIGHT}' xmlns='http://www.w3.org/2000/svg'>
+      <style>
+        .box-text {
+          fill: #0f172a;
+          font-size: 18px;
+          font-weight: 700;
+          font-family: "Arial", sans-serif;
+        }
+        .middle-text {
+          fill: #e63946;
+          font-size: 18px;
+          font-weight: 600;
+          font-family: "Arial", sans-serif;
+          text-decoration: underline;
+          letter-spacing: 0.5px;
+          paint-order: stroke;
+          stroke: #fff7e6;
+          stroke-width: 6px;
+          stroke-linejoin: round;
+        }
+      </style>
+      <rect width='100%' height='100%' fill='transparent' />
       <text x='100' y='210' class='box-text'>${
         ticket.ticketNumber || "--"
       }</text>
@@ -244,12 +230,27 @@ async function generateFinalTicketImage({ qrUrl, ticket }) {
       <text x='185' y='280' class='middle-text'>Quantity: ${quantityValue}</text>
     </svg>`;
 
-  const resvg = new Resvg(svgText, {
-    fitTo: { mode: "width", value: CANVAS_WIDTH },
-    font: { loadSystemFonts: true },
-  });
-  const pngData = resvg.render();
-  return pngData.asPng();
+  const bgImage = sharp(bgBuffer);
+  const resizedBg = await bgImage
+    .resize(CANVAS_WIDTH, CANVAS_HEIGHT, {
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 1 },
+    })
+    .toBuffer();
+
+  const qrResized = await sharp(qrBuffer)
+    .resize(QR_SIZE, QR_SIZE, { fit: "contain" })
+    .toBuffer();
+
+  const finalImage = await sharp(resizedBg)
+    .composite([
+      { input: qrResized, top: qrTop, left: qrLeft },
+      { input: Buffer.from(svgText), top: 0, left: 0 },
+    ])
+    .png({ compressionLevel: 9, adaptiveFiltering: true, palette: true })
+    .toBuffer();
+
+  return finalImage;
 }
 
 async function buildSanitizedTicketWithQr(ticket, req) {
