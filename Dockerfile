@@ -24,4 +24,4 @@ RUN npm install --omit=dev && npm rebuild sharp
 COPY . .
 
 # Start the server
-CMD ["node", "src/index.js"]
+CMD ["node", "src/index.js"]
