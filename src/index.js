@@ -13,7 +13,7 @@ import adminRouter from "./routes/admin.js";
 import { ensureDefaultAdmin } from "./models/admin.js";
 
 const app = express();
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT;
 
 // Security middleware
 app.use(
@@ -26,8 +26,8 @@ app.disable("x-powered-by");
 
 // CORS configuration - strict origins
 const allowedOrigins = [
-  process.env.ADMIN_URL || "http://localhost:5174",
-  process.env.CLIENT_URL || "http://localhost:5173",
+  process.env.ADMIN_URL ,
+  process.env.CLIENT_URL,
 ].filter(Boolean);
 
 app.use(
