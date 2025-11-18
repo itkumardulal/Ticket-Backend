@@ -20,18 +20,13 @@ function calculatePrice() {
     },
     {
       start: normalize(new Date("2025-11-18")),
-      end: normalize(new Date("2025-11-23")),
-      price: 750,
+      end: normalize(new Date("2025-11-27")),
+      price: 700,
     },
     {
-      start: normalize(new Date("2025-11-24")),
-      end: normalize(new Date("2025-12-10")),
-      price: 900,
-    },
-    {
-      start: normalize(new Date("2025-12-11")),
-      end: normalize(new Date("2025-12-28")),
-      price: 1200,
+      start: normalize(new Date("2025-11-28")),
+      end: normalize(new Date("2025-12-29")),
+      price: 1000,
     },
   ];
 
