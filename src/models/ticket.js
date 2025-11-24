@@ -103,6 +103,7 @@ export const Ticket = sequelize.define(
     indexes: [
       { fields: ["ticketNumber"], unique: true },
       { fields: ["token"], unique: true },
+      { fields: ["name"] },
       { fields: ["email"] },
       { fields: ["phone"] },
       { fields: ["status"] },

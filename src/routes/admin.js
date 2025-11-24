@@ -1,6 +1,6 @@
 import { Router } from "express";
 import jwt from "jsonwebtoken";
-import { literal, Op } from "sequelize";
+import { literal, Op, fn, col, where as sequelizeWhere } from "sequelize";
 import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
 import sharp from "sharp";
@@ -146,6 +146,21 @@ const STATUS_ORDER = literal(
   "FIELD(status, 'pending','approved','cancelled','checkedin')"
 );
 
+function sanitizeLikeTerm(term = "") {
+  return term.replace(/[\\%_]/g, "\\$&");
+}
+
+function buildSearchConditions(searchTerm) {
+  const normalized = searchTerm.toLowerCase();
+  const likePattern = `%${sanitizeLikeTerm(normalized)}%`;
+  const likeComparison = { [Op.like]: likePattern };
+  return [
+    sequelizeWhere(fn("LOWER", col("name")), likeComparison),
+    sequelizeWhere(fn("LOWER", col("email")), likeComparison),
+    sequelizeWhere(fn("LOWER", col("phone")), likeComparison),
+  ];
+}
+
 const ALLOWED_LIMITS = new Set([10, 20, 50, 100]);
 const DEFAULT_LIMIT = 10; // Fixed to 10 items per page
 
@@ -283,6 +298,7 @@ router.get("/tickets", requireAdmin, async (req, res) => {
     const statusFilter = (req.query.status || "").toLowerCase();
     const viewType = (req.query.view || "").toLowerCase(); // "review" or "book"
     const quickFilter = (req.query.quickFilter || "").toLowerCase(); // "remaining", "scanned", "all"
+    const searchTerm = (req.query.search || "").trim();
 
     const where = {};
 
@@ -314,6 +330,11 @@ router.get("/tickets", requireAdmin, async (req, res) => {
       where.scanCount = { [Op.gt]: 0 };
     }
 
+    // Apply search filter (name, email, phone)
+    if (searchTerm) {
+      where[Op.or] = buildSearchConditions(searchTerm);
+    }
+
     const { count, rows } = await Ticket.findAndCountAll({
       where,
       limit,
@@ -326,6 +347,32 @@ router.get("/tickets", requireAdmin, async (req, res) => {
 
     const items = rows;
 
+    // Calculate summary totals from ALL matching tickets (not just current page)
+    // Only for book view
+    let summary = null;
+    let totalValue = 0;
+    if (viewType === "book") {
+      const summaryRow =
+        (await Ticket.findOne({
+          where,
+          attributes: [
+            [literal("COALESCE(SUM(quantity), 0)"), "totalPeople"],
+            [literal("COALESCE(SUM(remaining), 0)"), "totalRemaining"],
+            [literal("COALESCE(SUM(scanCount), 0)"), "totalScanned"],
+            [literal("COALESCE(SUM(price), 0)"), "totalValue"],
+          ],
+          raw: true,
+        })) || {};
+      totalValue = Number(summaryRow.totalValue || 0);
+      summary = {
+        totalPeople: Number(summaryRow.totalPeople || 0),
+        totalRemaining: Number(summaryRow.totalRemaining || 0),
+        totalScanned: Number(summaryRow.totalScanned || 0),
+        totalPrice: totalValue,
+        totalValue,
+      };
+    }
+
     // Build sanitized tickets with QR
     const sanitizedItems = await Promise.all(
       items.map((ticket) => buildSanitizedTicketWithQr(ticket, req))
@@ -333,13 +380,26 @@ router.get("/tickets", requireAdmin, async (req, res) => {
 
     const totalPages = Math.max(Math.ceil(count / limit), 1);
 
-    return res.json({
-      data: sanitizedItems,
-      totalItems: count,
+    const response = {
+      items: sanitizedItems,
+      data: sanitizedItems, // Keep for backward compatibility
+      totalCount: count,
+      totalItems: count, // Keep for backward compatibility
       totalPages,
-      currentPage: page,
+      page,
+      currentPage: page, // Keep for backward compatibility
       limit,
-    });
+    };
+
+    // Add summary + total value for book view
+    if (summary) {
+      response.summary = summary;
+      response.totalValue = summary.totalValue ?? summary.totalPrice ?? 0;
+    } else {
+      response.totalValue = totalValue;
+    }
+
+    return res.json(response);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Failed to fetch tickets" });
