@@ -74,7 +74,7 @@ async function start() {
     }, 60 * 60 * 1000); // Every hour
 
     app.listen(PORT, () => {
-      console.log(`Server listening on http://localhost:${PORT}`);
+      console.log(`Server listening on ${PORT}`);
     });
   } catch (err) {
     console.error("Failed to start server:", err);
