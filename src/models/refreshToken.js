@@ -1,4 +1,4 @@
-import { DataTypes } from "sequelize";
+import { DataTypes, Op } from "sequelize";
 import { sequelize } from "./index.js";
 
 export const RefreshToken = sequelize.define(
@@ -56,7 +56,7 @@ export async function findRefreshToken(token) {
       token,
       revoked: false,
       expiresAt: {
-        [require("sequelize").Op.gt]: new Date(),
+        [Op.gt]: new Date(),
       },
     },
   });
@@ -77,7 +77,7 @@ export async function cleanupExpiredTokens() {
   return RefreshToken.destroy({
     where: {
       expiresAt: {
-        [require("sequelize").Op.lt]: new Date(),
+        [Op.lt]: new Date(),
       },
     },
   });

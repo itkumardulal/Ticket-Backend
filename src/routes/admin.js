@@ -20,7 +20,7 @@ import { buildWhatsAppMessage } from "../utils/whatsapp.js";
 const router = Router();
 
 const JWT_SECRET = process.env.JWT_SECRET || "secret";
-const ACCESS_TOKEN_EXPIRY = "15m"; // 15 minutes
+const ACCESS_TOKEN_EXPIRY = "1h"; // 1 hour
 const REFRESH_TOKEN_EXPIRY_DAYS = 7; // 7 days
 
 // POST /api/admin/login -> returns access token + sets refresh token cookie
