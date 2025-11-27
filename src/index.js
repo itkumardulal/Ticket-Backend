@@ -30,7 +30,6 @@ const allowedOrigins = [
   process.env.CLIENT_URL,
 ].filter(Boolean);
 
-console.log("Allowed Origins:", allowedOrigins);
 
 app.use(
   cors({
