@@ -5,40 +5,24 @@ import { Ticket, findTicketByToken } from "../models/ticket.js";
 
 const router = Router();
 
+const EVENT_KEY = process.env.EVENT_KEY || "default";
+
 // Dynamic pricing based on date ranges
 function calculatePrice() {
-  // ✅ UPDATED DATE–PRICE ARRAY (your new data here)
-
-  const normalize = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  // From 2025-12-02 to 2025-12-25 (inclusive) price is 350, otherwise fallback
+  const normalize = (d) =>
+    new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const now = normalize(new Date());
 
-  const ticketPrices = [
-    {
-      start: normalize(new Date("2025-11-11")),
-      end: normalize(new Date("2025-11-17")),
-      price: 500,
-    },
-    {
-      start: normalize(new Date("2025-11-18")),
-      end: normalize(new Date("2025-11-27")),
-      price: 700,
-    },
-    {
-      start: normalize(new Date("2025-11-28")),
-      end: normalize(new Date("2025-12-29")),
-      price: 1000,
-    },
-  ];
+  const start = normalize(new Date("2025-12-02"));
+  const end = normalize(new Date("2025-12-25"));
 
-  // 🔁 SAME LOGIC (not touched)
-  for (const range of ticketPrices) {
-    if (now >= range.start && now <= range.end) {
-      return range.price;
-    }
+  if (now >= start && now <= end) {
+    return 350;
   }
 
-  // Default price if outside all ranges
-  return 1000;
+  // Default price outside range
+  return 350;
 }
 
 function normalizeTicketInput(body = {}) {
@@ -88,6 +72,7 @@ function normalizeTicketInput(body = {}) {
     price: totalPrice,
     remaining: quantity,
     vipSeats: 0,
+    eventKey: EVENT_KEY,
   };
 }
 
@@ -105,6 +90,8 @@ router.post("/", async (req, res) => {
       status: "pending",
       emailSent: false,
       sentAt: null,
+      // Ensure all tickets are tagged with current event
+      eventKey: EVENT_KEY,
     });
 
     return res.status(201).json({
@@ -149,7 +136,10 @@ router.get("/:token/qr.png", async (req, res) => {
     if (!ticket) {
       return res.status(404).json({ error: "Ticket not found" });
     }
-    const payload = JSON.stringify({ token: ticket.token });
+    // Public QR for ticket → website with embedded token (for admin verification)
+    const payload = `https://sindhulibazar.com/?token=${encodeURIComponent(
+      ticket.token
+    )}`;
     const buffer = await QRCode.toBuffer(payload, { type: "png", margin: 1 });
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "public, max-age=300");

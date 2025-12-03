@@ -4,7 +4,7 @@ import { literal, Op, fn, col, where as sequelizeWhere } from "sequelize";
 import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
 import sharp from "sharp";
-import { validateAdminCredentials } from "../models/admin.js";
+import { Admin, validateAdminCredentials } from "../models/admin.js";
 import { Ticket, findTicketByToken, sanitizeTicket } from "../models/ticket.js";
 import {
   createRefreshToken,
@@ -32,9 +32,16 @@ router.post("/login", loginRateLimiter, async (req, res) => {
     const admin = await validateAdminCredentials(username, password);
     if (!admin) return res.status(401).json({ error: "Invalid credentials" });
 
+    const eventKey = admin.eventKey || (process.env.EVENT_KEY || "default");
+
     // Generate access token (15 minutes)
     const accessToken = jwt.sign(
-      { id: admin.id, username: admin.username, type: "access" },
+      {
+        id: admin.id,
+        username: admin.username,
+        type: "access",
+        eventKey,
+      },
       JWT_SECRET,
       { expiresIn: ACCESS_TOKEN_EXPIRY }
     );
@@ -89,9 +96,16 @@ router.post("/refresh", async (req, res) => {
     // Revoke old refresh token (token rotation)
     await revokeRefreshToken(refreshToken);
 
+    // Look up admin to get its eventKey
+    const admin = await Admin.findByPk(tokenRecord.adminId);
+    if (!admin) {
+      return res.status(401).json({ error: "Admin not found for token" });
+    }
+    const eventKey = admin.eventKey || (process.env.EVENT_KEY || "default");
+
     // Generate new access token
     const accessToken = jwt.sign(
-      { id: tokenRecord.adminId, type: "access" },
+      { id: admin.id, type: "access", eventKey },
       JWT_SECRET,
       { expiresIn: ACCESS_TOKEN_EXPIRY }
     );
@@ -170,14 +184,23 @@ const DEFAULT_LIMIT = 10; // Fixed to 10 items per page
  * @param {Object} ticket - Ticket object
  * @returns {Promise<Buffer>} Final ticket image buffer
  */
+const EVENT_KEY = process.env.EVENT_KEY || "default";
+const IS_EATSTREET = EVENT_KEY.toUpperCase() === "EATSTREET";
+
 async function generateFinalTicketImage({ qrUrl, ticket }) {
   const CANVAS_WIDTH = 700;
-  const CANVAS_HEIGHT = 420;
-  const QR_SIZE = 180;
+  // Height tuned so full ticket area is visible
+  const CANVAS_HEIGHT = 690;
+  const QR_SIZE = 200;
   const QR_MARGIN = 24;
-
-  const bgResponse = await fetch("https://i.imgur.com/8Xq8GDi.jpeg");
-  const bgBuffer = Buffer.from(await bgResponse.arrayBuffer());
+  // Cache background image in memory so approving tickets is faster
+  if (!generateFinalTicketImage.bgBuffer) {
+    const bgResponse = await fetch("https://i.imgur.com/8tRnbkd.png");
+    generateFinalTicketImage.bgBuffer = Buffer.from(
+      await bgResponse.arrayBuffer()
+    );
+  }
+  const bgBuffer = generateFinalTicketImage.bgBuffer;
 
   let qrBuffer;
   if (qrUrl.startsWith("data:")) {
@@ -203,14 +226,21 @@ async function generateFinalTicketImage({ qrUrl, ticket }) {
   const price = ticket.price || "0.00";
   const formattedPrice = typeof price === "string" ? price : price.toFixed(2);
 
-  const ticketTypeText = ticket.ticketType === "vip" ? "VIP" : "Normal";
+  let ticketTypeText;
+  if (ticket.ticketType === "vip") {
+    ticketTypeText = "VIP";
+  } else if (IS_EATSTREET) {
+    ticketTypeText = "Pre Sale";
+  } else {
+    ticketTypeText = "Normal";
+  }
   const quantityValue =
     typeof ticket.quantity === "number"
       ? ticket.quantity
       : Number(ticket.quantity) || 1;
 
-  const qrLeft = CANVAS_WIDTH - QR_SIZE - QR_MARGIN;
-  const qrTop = CANVAS_HEIGHT - QR_SIZE - QR_MARGIN - 60;
+ const qrLeft = (CANVAS_WIDTH - QR_SIZE - QR_MARGIN - 40) * 0.5-20;
+  const qrTop = CANVAS_HEIGHT - QR_SIZE - QR_MARGIN-50;
 
   const svgText = `
     <svg width='${CANVAS_WIDTH}' height='${CANVAS_HEIGHT}' xmlns='http://www.w3.org/2000/svg'>
@@ -221,35 +251,24 @@ async function generateFinalTicketImage({ qrUrl, ticket }) {
           font-weight: 700;
           font-family: "Arial", sans-serif;
         }
-        .middle-text {
-          fill: #e63946;
-          font-size: 18px;
-          font-weight: 600;
-          font-family: "Arial", sans-serif;
-          text-decoration: underline;
-          letter-spacing: 0.5px;
-          paint-order: stroke;
-          stroke: #fff7e6;
-          stroke-width: 6px;
-          stroke-linejoin: round;
-        }
+   
       </style>
       <rect width='100%' height='100%' fill='transparent' />
-      <text x='100' y='210' class='box-text'>${
-        ticket.ticketNumber || "--"
-      }</text>
-      <text x='105' y='270' class='box-text'>${ticketTypeText}</text>
-      <text x='70' y='330' class='box-text'>${formattedPrice}</text>
-      <text x='185' y='220' class='middle-text'>${ticket.name || "--"}</text>
-      <text x='185' y='250' class='middle-text'>${bookedDate}</text>
-      <text x='185' y='280' class='middle-text'>Quantity: ${quantityValue}</text>
+      <text x='340' y='340' class='box-text'>${
+     ticket.ticketNumber}</text>
+      <text x='590' y='425' class='box-text'>${ticketTypeText}</text>
+      <text x='550' y='460' class='box-text'>${formattedPrice}</text>
+      <text x='510' y='510' class='box-text'>${ticket.name || "--"}</text>
+      <text x='510' y='567' class='box-text'>${bookedDate}</text>
+      <text x='510' y='538' class='box-text'> ${quantityValue}</text>
     </svg>`;
 
   const bgImage = sharp(bgBuffer);
+  // Use cover to avoid black boxes and fill the entire canvas
   const resizedBg = await bgImage
     .resize(CANVAS_WIDTH, CANVAS_HEIGHT, {
-      fit: "contain",
-      background: { r: 0, g: 0, b: 0, alpha: 1 },
+      fit: "cover",
+      position: "centre",
     })
     .toBuffer();
 
@@ -272,8 +291,11 @@ async function buildSanitizedTicketWithQr(ticket, req) {
   if (!ticket) return null;
   const sanitized = sanitizeTicket(ticket);
   try {
-    const payload = JSON.stringify({ token: ticket.token });
-    sanitized.qrCode = await QRCode.toDataURL(payload);
+    // QR encodes website URL with embedded token so admin scanner can verify
+    const qrUrl = `https://sindhulibazar.com/?token=${encodeURIComponent(
+      ticket.token
+    )}`;
+    sanitized.qrCode = await QRCode.toDataURL(qrUrl);
     // Use stored R2 URL if available, otherwise fallback
     sanitized.qrImageUrl = ticket.qrImageUrl || sanitized.qrCode;
   } catch (err) {
@@ -300,7 +322,11 @@ router.get("/tickets", requireAdmin, async (req, res) => {
     const quickFilter = (req.query.quickFilter || "").toLowerCase(); // "remaining", "scanned", "all"
     const searchTerm = (req.query.search || "").trim();
 
-    const where = {};
+    const adminEventKey = req.admin?.eventKey || "default";
+    const where = {
+      // Scope tickets to the logged-in admin's event
+      eventKey: adminEventKey,
+    };
 
     // View-specific status filtering
     if (viewType === "review") {
@@ -415,6 +441,10 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
     }
     const ticket = await Ticket.findByPk(ticketId);
     if (!ticket) return res.status(404).json({ error: "Ticket not found" });
+    const adminEventKey = req.admin?.eventKey || (process.env.EVENT_KEY || "default");
+    if (ticket.eventKey && ticket.eventKey !== adminEventKey) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
     if (ticket.status === "cancelled") {
       return res.status(400).json({ error: "Ticket is cancelled" });
     }
@@ -422,8 +452,10 @@ router.post("/tickets/:id/approve", requireAdmin, async (req, res) => {
       return res.status(400).json({ error: "Ticket already approved" });
     }
 
-    // Generate QR code
-    const qrPayload = JSON.stringify({ token: ticket.token });
+    // Generate QR code that opens website with embedded token
+    const qrPayload = `https://sindhulibazar.com/?token=${encodeURIComponent(
+      ticket.token
+    )}`;
     const qrBuffer = await QRCode.toBuffer(qrPayload, { type: "png" });
     const qrDataUrl = await QRCode.toDataURL(qrPayload);
 
@@ -521,6 +553,10 @@ router.post("/tickets/:id/cancel", requireAdmin, async (req, res) => {
     }
     const ticket = await Ticket.findByPk(ticketId);
     if (!ticket) return res.status(404).json({ error: "Ticket not found" });
+    const adminEventKey = req.admin?.eventKey || (process.env.EVENT_KEY || "default");
+    if (ticket.eventKey && ticket.eventKey !== adminEventKey) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
 
     ticket.status = "cancelled";
     await ticket.save();
@@ -535,6 +571,41 @@ router.post("/tickets/:id/cancel", requireAdmin, async (req, res) => {
   }
 });
 
+// GET /api/admin/settlements -> summary for approved tickets (for current admin's event)
+router.get("/settlements", requireAdmin, async (req, res) => {
+  try {
+    const adminEventKey = req.admin?.eventKey || "default";
+    const where = {
+      status: "approved",
+      eventKey: adminEventKey,
+    };
+
+    const summaryRow =
+      (await Ticket.findOne({
+        where,
+        attributes: [
+          [literal("COALESCE(SUM(price), 0)"), "totalPrice"],
+          [literal("COUNT(*)"), "approvedCount"],
+        ],
+        raw: true,
+      })) || {};
+
+    const totalPrice = Number(summaryRow.totalPrice || 0);
+    const approvedCount = Number(summaryRow.approvedCount || 0);
+    const settleAmount = Number((totalPrice * 0.1285).toFixed(2));
+
+    return res.json({
+      totalPrice,
+      approvedCount,
+      settleAmount,
+      rate: 12.85,
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Failed to fetch settlements summary" });
+  }
+});
+
 // POST /api/admin/tickets/:id/whatsapp -> generate WhatsApp wa.me link with QR image
 router.post("/tickets/:id/whatsapp", requireAdmin, async (req, res) => {
   try {
@@ -544,6 +615,10 @@ router.post("/tickets/:id/whatsapp", requireAdmin, async (req, res) => {
     }
     const ticket = await Ticket.findByPk(ticketId);
     if (!ticket) return res.status(404).json({ error: "Ticket not found" });
+    const adminEventKey = req.admin?.eventKey || (process.env.EVENT_KEY || "default");
+    if (ticket.eventKey && ticket.eventKey !== adminEventKey) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
 
     if (!ticket.phone) {
       return res.status(400).json({ error: "Phone number not available" });
@@ -554,7 +629,9 @@ router.post("/tickets/:id/whatsapp", requireAdmin, async (req, res) => {
 
     // If no final image, ensure QR is uploaded to R2
     if (!imageUrl) {
-      const qrPayload = JSON.stringify({ token: ticket.token });
+      const qrPayload = `https://sindhulibazar.com/?token=${encodeURIComponent(
+        ticket.token
+      )}`;
       const qrBuffer = await QRCode.toBuffer(qrPayload, { type: "png" });
       const filename = `ticket-${ticket.token}.png`;
       try {
@@ -625,6 +702,7 @@ router.post("/verify", async (req, res) => {
 
     const adminPayload = isAdminRequest(req);
     const isAdmin = Boolean(adminPayload);
+    const adminEventKey = adminPayload?.eventKey || undefined;
 
     // For non-admin, return plain text even if token is missing
     if (!token) {
@@ -634,7 +712,10 @@ router.post("/verify", async (req, res) => {
       return res.status(400).json({ error: "Token required" });
     }
 
-    const ticket = await findTicketByToken(token);
+    const ticket = await findTicketByToken(
+      token,
+      isAdmin ? adminEventKey : undefined
+    );
     if (!ticket) {
       // For non-admin, return plain text even for invalid QR
       if (!isAdmin) {

@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import { sequelize } from "./models/index.js";
 import "./models/admin.js";
+import { ensureTicketAutoIncrement } from "./models/ticket.js";
 import "./models/ticket.js";
 import "./models/refreshToken.js";
 import ticketsRouter from "./routes/tickets.js";
@@ -63,6 +64,9 @@ async function start() {
     await sequelize.authenticate();
     await sequelize.sync({ force: false });
     await ensureDefaultAdmin();
+    // Ensure ticket numbers start from at least 5000 (MySQL will ignore
+    // this if AUTO_INCREMENT is already higher)
+    await ensureTicketAutoIncrement(5000);
 
     // Cleanup expired refresh tokens every hour
     const { cleanupExpiredTokens } = await import("./models/refreshToken.js");

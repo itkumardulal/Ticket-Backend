@@ -32,30 +32,21 @@ export function buildWhatsAppMessage(ticket, qrImageUrl) {
       : 0);
 
   const qrLink = ticket.finalImageUrl || qrImageUrl || "";
-
   const message = `
 Hello ${ticket.name},
 
-Sindhuli Concert - BrotherHood Nepal x NLT
-
+Sindhuli Concert - EATSTREET x NLT
 Your ticket has been processed with the following details:
 
 • Ticket Number: ${ticket.ticketNumber}
-
 • Ticket Type: ${ticket.ticketType}
-
 • Quantity: ${ticket.quantity}
-
 • Total Price: Rs. ${totalPrice}
-
 • Status: ${ticket.status}
 
 Please present your QR code at the event entrance and avoid sharing it publicly.
-
 QR Code Link: ${qrLink}
-
 Sent via sindhulibazar.com
-
 Thank you!
 `;
 

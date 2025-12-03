@@ -98,6 +98,12 @@ export const Ticket = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    // Simple event/tenant scoping field so multiple events can share one DB
+    eventKey: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: process.env.EVENT_KEY || "default",
+    },
   },
   {
     indexes: [
@@ -107,12 +113,28 @@ export const Ticket = sequelize.define(
       { fields: ["email"] },
       { fields: ["phone"] },
       { fields: ["status"] },
+      { fields: ["eventKey"] },
     ],
   }
 );
 
-export async function findTicketByToken(token) {
-  return Ticket.findOne({ where: { token } });
+export async function findTicketByToken(token, eventKey) {
+  const where = { token };
+  if (eventKey) {
+    where.eventKey = eventKey;
+  }
+  return Ticket.findOne({ where });
+}
+
+// Ensure ticketNumber auto-increment starts from at least 5000
+export async function ensureTicketAutoIncrement(startFrom = 5000) {
+  try {
+    await sequelize.query(
+      `ALTER TABLE tickets AUTO_INCREMENT = ${Number(startFrom) || 5000}`
+    );
+  } catch (err) {
+    console.error("Failed to ensure ticket AUTO_INCREMENT", err);
+  }
 }
 
 export function sanitizeTicket(ticket) {

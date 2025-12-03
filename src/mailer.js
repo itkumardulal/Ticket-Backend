@@ -23,7 +23,7 @@ export async function sendTicketEmail({
   vipSeats,
   ticketNumber,
 }) {
-  const subject = "Sindhuli Concert Ticket - BrotherHood Nepal x NLT";
+  const subject = "Sindhuli Concert Ticket - Eat Street NLT";
 
   const ticketLabel =
     ticketType === "vip" ? "VIP Table (5 Persons)" : "Normal Ticket";
@@ -90,13 +90,13 @@ export async function sendTicketEmail({
     <div style="font-family: Arial, sans-serif;color:#111;">
       <h2 style="margin-bottom:8px;">Sindhuli Concert - Your Ticket</h2>
       <p style="margin:0 0 12px;">Hello ${name},</p>
-      <p style="margin:0 0 16px;">Thank you for choosing BrotherHood Nepal x NLT. Please present this QR code at the event entrance.</p>
+      <p style="margin:0 0 16px;">Thank you for choosing EatStreet Funk Park x NLT. Please present this QR code at the event entrance.</p>
       ${qrLinkHtml}
       ${vipInfo}
       ${detailsHtml}
       <p style="margin:16px 0 0;font-size:13px;color:#4b5563;">Show this QR code at the gate during the event. Do not share with others.</p>
       <hr style="margin:24px 0;border:none;border-top:1px solid #e5e7eb;"/>
-      <p style="margin:0;font-size:13px;color:#6b7280;">BrotherHood Nepal in collaboration with Nepal Leadership Technology (NLT)</p>
+      <p style="margin:0;font-size:13px;color:#6b7280;">EatStreet Funk Park in collaboration with Nepal Leadership Technology (NLT)</p>
     </div>
   `;
 
