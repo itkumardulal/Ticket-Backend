@@ -18,11 +18,11 @@ function calculatePrice() {
   const end = normalize(new Date("2025-12-25"));
 
   if (now >= start && now <= end) {
-    return 350;
+    return 400;
   }
 
   // Default price outside range
-  return 350;
+  return 400;
 }
 
 function normalizeTicketInput(body = {}) {
