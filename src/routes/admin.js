@@ -571,12 +571,15 @@ router.post("/tickets/:id/cancel", requireAdmin, async (req, res) => {
   }
 });
 
-// GET /api/admin/settlements -> summary for approved tickets (for current admin's event)
+// GET /api/admin/settlements -> summary for approved + checkedin tickets
 router.get("/settlements", requireAdmin, async (req, res) => {
   try {
     const adminEventKey = req.admin?.eventKey || "default";
+
     const where = {
-      status: "approved",
+      status: {
+        [Op.in]: ["approved", "checkedin"],
+      },
       eventKey: adminEventKey,
     };
 
@@ -585,26 +588,30 @@ router.get("/settlements", requireAdmin, async (req, res) => {
         where,
         attributes: [
           [literal("COALESCE(SUM(price), 0)"), "totalPrice"],
-          [literal("COUNT(*)"), "approvedCount"],
+          [literal("COALESCE(SUM(quantity), 0)"), "totalQuantity"],
         ],
         raw: true,
       })) || {};
 
     const totalPrice = Number(summaryRow.totalPrice || 0);
-    const approvedCount = Number(summaryRow.approvedCount || 0);
+    const totalQuantity = Number(summaryRow.totalQuantity || 0);
     const settleAmount = Number((totalPrice * 0.1285).toFixed(2));
 
     return res.json({
       totalPrice,
-      approvedCount,
+      totalQuantity,
       settleAmount,
       rate: 12.85,
     });
   } catch (e) {
     console.error(e);
-    return res.status(500).json({ error: "Failed to fetch settlements summary" });
+    return res
+      .status(500)
+      .json({ error: "Failed to fetch settlements summary" });
   }
 });
+
+
 
 // POST /api/admin/tickets/:id/whatsapp -> generate WhatsApp wa.me link with QR image
 router.post("/tickets/:id/whatsapp", requireAdmin, async (req, res) => {
